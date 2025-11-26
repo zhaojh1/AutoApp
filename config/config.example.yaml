@@ -1,0 +1,1 @@
+app:\n  name: AutoApp\n  environment: development\nlogging:\n  level: INFO\n  file: logs/app.log\n
