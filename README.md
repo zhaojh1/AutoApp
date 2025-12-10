@@ -1,1 +1,13 @@
-# AutoApp\n\nAutoApp 是一个基础 Python 项目模板，包含标准的 src/ 目录、配置文件示例以及虚拟环�?(venv) 支持。\n\n## 目录结构\n- src/ : 主程序源码\n- config/ : 配置文件\n- tests/ : 测试代码\n- requirements.txt : 依赖列表\n\n## 快速开始\n1. 激活虚拟环�?env\\Scripts\\activate\n2. 安装依赖 pip install -r requirements.txt\n3. 运行主程�?python -m src.main\n
+# AutoApp - 问卷星自动填写
+
+基于 Selenium 的问卷星自动填写脚本，按配置文件生成答案并批量提交。
+
+## 功能概览
+- 按配置文件 (`config/config.py`) 定义问卷链接、提交次数、延时范围。
+- 支持单选/多选题多种生成策略（随机整数、按概率）。
+- 多选题默认行为：每个选项独立按给定概率命中；若全未命中则兜底随机选 1 项（即“独立伯努利 + 兜底”）。
+- 可配置浏览器选项：headless、窗口尺寸、UA、Chrome/Chromedriver 路径、加载/提交超时。
+- 日志输出：使用 `logging` 记录运行过程、错误与告警。
+- 手工验证码处理：检测到弹窗式验证码时暂停等待人工处理。
+
+## 目录结构
