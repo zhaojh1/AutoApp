@@ -1,1 +1,2 @@
-# 在此添加项目依赖，例�?\n# requests==2.32.3\n
+# Project dependencies
+selenium==4.21.0
