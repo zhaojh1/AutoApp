@@ -22,6 +22,20 @@ class WJXSubmitter:
 
         self.logger = logging.getLogger(__name__)
 
+        # 代理/换IP配置
+        self.proxy_list = self._load_proxy_list()
+        self.proxy_index = 0
+        self.rotate_proxy_each_submit = bool(self.config.get("rotate_proxy_each_submit", False))
+        self.current_proxy = self.config.get("default_proxy")
+
+        # Chrome driver 其他配置
+        self.page_load_timeout = self.config.get("page_load_timeout_seconds", 20)
+        self.submit_button_timeout = self.config.get("submit_button_timeout_seconds", 10)
+
+        self.driver = None
+        self._create_or_replace_driver(self.current_proxy)
+
+    def _build_chrome_options(self, proxy=None):
         options = webdriver.ChromeOptions()
 
         # 是否无头
@@ -44,11 +58,27 @@ class WJXSubmitter:
         else:
             self.logger.warning(f"chrome_binary_path 不存在: {chrome_binary_path}")
 
+        # 代理
+        if proxy:
+            options.add_argument(f'--proxy-server={proxy}')
+            self.logger.info(f"当前使用代理: {proxy}")
+
+        return options
+
+    def _create_or_replace_driver(self, proxy=None):
+        """根据当前配置（可选代理）创建或替换 driver。"""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception as e:
+                self.logger.warning(f"关闭旧浏览器时发生错误: {e}")
+
+        options = self._build_chrome_options(proxy)
+
         driver_path = self.config.get("chromedriver_path", r"C:\Program Files\Google\Chrome\Application\chromedriver-win64\chromedriver.exe")
         if not os.path.exists(driver_path):
             self.logger.warning(f"chromedriver_path 不存在: {driver_path}")
 
-        # 创建 driver（标准 selenium，无抓包）
         service = ChromeService(executable_path=driver_path) if os.path.exists(driver_path) else ChromeService()
         self.driver = webdriver.Chrome(service=service, options=options)
 
@@ -64,8 +94,41 @@ class WJXSubmitter:
             """
         })
         self.generated_answers_cache = {}  # 用于存储已生成的答案，供条件问题判断
-        self.page_load_timeout = self.config.get("page_load_timeout_seconds", 20)
-        self.submit_button_timeout = self.config.get("submit_button_timeout_seconds", 10)
+
+    def _load_proxy_list(self):
+        """从配置或文件加载代理列表，格式支持 http://host:port。"""
+        proxy_list = []
+        config_proxies = self.config.get("proxies") or []
+        if isinstance(config_proxies, list):
+            proxy_list.extend([p.strip() for p in config_proxies if p.strip()])
+
+        proxy_file_path = self.config.get("proxies_file_path")
+        if proxy_file_path and os.path.exists(proxy_file_path):
+            try:
+                with open(proxy_file_path, "r", encoding="utf-8") as f:
+                    file_proxies = [line.strip() for line in f if line.strip()]
+                    proxy_list.extend(file_proxies)
+            except Exception as e:
+                self.logger.warning(f"读取代理文件失败 {proxy_file_path}: {e}")
+
+        # 去重同时保留顺序
+        seen = set()
+        unique_list = []
+        for p in proxy_list:
+            if p not in seen:
+                seen.add(p)
+                unique_list.append(p)
+        if unique_list:
+            self.logger.info(f"已加载 {len(unique_list)} 个代理。")
+        return unique_list
+
+    def _next_proxy(self):
+        """顺序轮换代理，列表为空时返回None。"""
+        if not self.proxy_list:
+            return None
+        proxy = self.proxy_list[self.proxy_index % len(self.proxy_list)]
+        self.proxy_index += 1
+        return proxy
 
     def get_random_int(self, min_val, max_val):
         """生成指定范围内的随机整数"""
@@ -319,6 +382,16 @@ class WJXSubmitter:
         successful_submissions = 0
         for i in range(num_submissions):
             self.logger.info(f"--- 开始第 {i + 1}/{num_submissions} 次提交 ---")
+
+            # 若开启了“每次提交前换IP”，则在此更换代理并重建driver
+            if self.rotate_proxy_each_submit:
+                self.current_proxy = self._next_proxy()
+                if self.current_proxy:
+                    self.logger.info(f"准备更换代理: {self.current_proxy}")
+                else:
+                    self.logger.info("未配置代理列表，继续使用本机网络。")
+                self._create_or_replace_driver(self.current_proxy)
+
             try:
                 if self.submit_once():
                     successful_submissions += 1
@@ -377,6 +450,14 @@ def generate_config_interactively():
     if new_config_data["max_delay_seconds"] < new_config_data["min_delay_seconds"]:
         logger.warning("警告：最大延时小于最小延时，已将最大延时设为与最小延时相同。")
         new_config_data["max_delay_seconds"] = new_config_data["min_delay_seconds"]
+
+    # 可选：代理/换IP配置
+    proxy_file_input = input("可选：代理列表文件路径(每行一个代理，如 http://ip:port，直接回车跳过): ").strip()
+    if proxy_file_input:
+        new_config_data["proxies_file_path"] = proxy_file_input
+    rotate_proxy_input = input("是否每次提交前更换代理? (是/否，默认否): ").strip().lower()
+    if rotate_proxy_input in ['是', 'y', 'yes']:
+        new_config_data["rotate_proxy_each_submit"] = True
 
     questions = []
     logger.info("--- 开始配置问卷问题 ---")
