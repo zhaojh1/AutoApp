@@ -2,9 +2,13 @@
     ld模拟器使用appium实现自动化开googlepay会员
 """
 import re
+import os
 import time
+import yaml
+import argparse
 import subprocess
 from pathlib import Path
+from datetime import datetime
 from loguru import logger
 from appium import webdriver
 from dataclasses import dataclass
@@ -16,9 +20,19 @@ from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.pointer_input import PointerInput
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import TimeoutException
 
+# 配置数据库和路径
 music_db = ''
+base_path = Path(__file__).parent.parent.parent
+prepare_file_path = ''
+address_yaml_path = ''
+addresses = yaml.load(open(address_yaml_path, encoding='utf8'), Loader=yaml.FullLoader)
+
+# 配置日志文件
+log_dir = ''
+log_fpath = os.path.join(log_dir, f'start_apple_premium_{datetime.now().strftime("%Y-%m-%d")}.log')
+logger.add(log_fpath, rotation='1 day', retention='7 days', level='INFO')
 
 
 class LdDeviceError(Exception):
@@ -50,6 +64,11 @@ class GmailAccountError(LdDeviceError):
     pass
 
 
+class GmailPhoneError(LdDeviceError):
+    """Gmail需要手机验证"""
+    pass
+
+
 class LoginGmailError(LdDeviceError):
     """Gmail账号登录失败"""
     pass
@@ -60,8 +79,8 @@ class AccountInfoError(LdDeviceError):
     pass
 
 
-class InstallAppleError(LdDeviceError):
-    """下载apple music失败"""
+class InstallAppError(LdDeviceError):
+    """下载失败"""
     pass
 
 
@@ -75,6 +94,11 @@ class UnlockDeviceError(LdDeviceError):
     pass
 
 
+class StartPremiumError(LdDeviceError):
+    """开会员发生错误"""
+    pass
+
+
 @dataclass
 class LdAppLocators:
     lock_btn = (AppiumBy.XPATH, '//android.widget.ImageView[@content-desc="Unlock"]')
@@ -84,6 +108,8 @@ class LdAppLocators:
     )
     net_internet = (
         AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.LinearLayout").instance(4)')
+    account_btn = (
+        AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.LinearLayout").instance(12)')
     wifi_btn = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.RelativeLayout").instance(0)')
     modify_btn = (AppiumBy.ACCESSIBILITY_ID, 'Modify')
     hostname_input = (AppiumBy.ID, 'com.android.settings:id/proxy_hostname')
@@ -101,10 +127,41 @@ class LdAppLocators:
     gmail_login_succ = (  # new UiSelector().resourceId("com.android.vending:id/0_resource_name_obfuscated")
         AppiumBy.ANDROID_UIAUTOMATOR,
         'new UiSelector().resourceId("com.android.vending:id/0_resource_name_obfuscated")')
-    search = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Search")')
-    search2 = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.view.View").instance(21)')
-    search3 = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.view.View").instance(21)')
-
+    search_input = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.EditText")')
+    install_btn = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Install")')
+    gmail_account = (
+        AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.LinearLayout").instance(9)')
+    remove_btn = (AppiumBy.ID, 'com.android.settings:id/button')
+    confirm_remove = (AppiumBy.ID, 'android:id/button1')
+    add_account_btn = (
+        AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.RelativeLayout").instance(0)')
+    choose_google_ele = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Personal (IMAP)")')
+    choose_google = (AppiumBy.ANDROID_UIAUTOMATOR,
+                     'new UiSelector().className("android.widget.RelativeLayout").instance(1)')
+    skip_btn = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Skip")')
+    agree_btn = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("I agree")')
+    more_btn = (AppiumBy.CLASS_NAME, 'android.widget.Button')
+    confirm_phone = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Confirm your recovery phone number")')
+    apple_continue = (
+        AppiumBy.ANDROID_UIAUTOMATOR,
+        'new UiSelector().resourceId("com.apple.android.music:id/signin_continue_button")')
+    do_not_send = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("DON\'T SEND")')
+    more_option = (AppiumBy.ACCESSIBILITY_ID, 'More options')
+    setting = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Settings")')
+    apple_account = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Account")')
+    apple_login = (
+        AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.LinearLayout").instance(5)')
+    apple_username_input = (AppiumBy.ID, 'com.apple.android.music:id/signin_id')
+    apple_password_input = (AppiumBy.ID, 'com.apple.android.music:id/signin_password')
+    appel_login_continue = (AppiumBy.ID, 'com.apple.android.music:id/signin_continue_button')
+    theme_btn = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Theme")')
+    navigate_up = (AppiumBy.ACCESSIBILITY_ID, 'Navigate up')
+    subscribe_btn = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Subscribe Now")')
+    start_subscribe = (
+        AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().resourceId("com.apple.android.music:id/offer_btn")')
+    street_address_locator = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Street address")')
+    complete_account_locator = (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Complete account setup")')
+    complete_continue = (AppiumBy.XPATH, '//android.widget.Button[@resource-id="com.android.vending:id/0_resource_name_obfuscated"]')
 
 class AppiumldAuto:
     LDPLAYER9_DIR = r"D:\leidian\LDPlayer9"
@@ -121,16 +178,25 @@ class AppiumldAuto:
         noReset=True
     )
 
-    def __init__(self, gmail_username, apple_username, code=None) -> None:
+    def __init__(self, gmail_username, apple_username, code=None, mode=None, accspy=None) -> None:
         self.udid = ''
         self.gmail_username = gmail_username
         self.apple_username = apple_username
         self.code = code
+        self.accspy = accspy
         # 初始化账号信息
         self._load_account_info()
         # 启动模拟器、初始化 Appium 驱动
-        self.start_device()
-        self.driver = self.start_driver()
+        if mode != 'create':
+            # 配置模拟器设置
+            self.modify_emulator(
+                username=self.gmail_username,
+                resolution='1080,1920,480',
+                cpu=2,
+                memory=2048
+            )
+            self.start_device()
+            self.driver = self.start_driver()
 
     def _load_account_info(self):
         """在初始化时加载账号信息"""
@@ -151,8 +217,13 @@ class AppiumldAuto:
         # 加载YouTube账号信息
         if self.gmail_username:
             try:
-                acc_info = music_db.accounts_v2.find_one(
-                    {'dsp.name': 'youtube_video', 'username': self.gmail_username.lower()})
+                acc_info = music_db.accounts_v2.find_one({
+                    'dsp.name': {"$in":['youtube_channel', 'youtube_video', 'youtube']},
+                    'username': {
+                        '$regex': f'^{self.gmail_username.lower()}$',  # ^和$确保完全匹配（避免部分匹配）
+                        '$options': 'i'  # i = ignore case，忽略大小写
+                    }
+                })
                 if acc_info:
                     self.youtube_info.update({
                         'password': acc_info.get('password', ''),
@@ -213,8 +284,8 @@ class AppiumldAuto:
                 'adbExecTimeout': 120000,
                 'newCommandTimeout': 120,
                 'ignoreHiddenApiPolicyError': True,  # 忽略隐藏API配置错误
-                'disableHiddenApiPolicy': False,     # 禁止自动执行隐藏API禁用命令
-                'skipDeviceInitialization': False    # 保留基础设备初始化（仅禁隐藏API）
+                'disableHiddenApiPolicy': False,  # 禁止自动执行隐藏API禁用命令
+                'skipDeviceInitialization': False  # 保留基础设备初始化（仅禁隐藏API）
             })
             driver = webdriver.Remote(self.appium_server_url,
                                       options=UiAutomator2Options().load_capabilities(self.capabilities))
@@ -223,6 +294,262 @@ class AppiumldAuto:
         except Exception as e:
             logger.error(f"Appium启动失败: {e}")
             raise AppiumStartError(f"Appium启动失败: {e}")
+
+    def create_emulator(self, username=None):
+        """创建新的模拟器实例
+
+        Args:
+            username: 模拟器名称，默认使用 gmail_username
+
+        Returns:
+            bool: 创建是否成功
+        """
+        name = username or self.gmail_username
+        try:
+            logger.info(f"开始创建模拟器: {name}")
+
+            # 先检查模拟器是否已存在
+            if self._check_emulator_exists(name):
+                logger.info(f"模拟器 {name} 已存在，跳过创建")
+                return True
+
+            result = subprocess.run(
+                f'dnconsole.exe add --name "{name}"',
+                cwd=self.LDPLAYER9_DIR,
+                shell=True,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=60,
+            )
+
+            if result.stdout:
+                logger.info(f"[STDOUT] {result.stdout}")
+            if result.stderr:
+                logger.warning(f"[STDERR] {result.stderr}")
+
+            # 等待一下让模拟器创建完成
+            time.sleep(3)
+
+            # 最可靠的检查方式：再次检查模拟器是否存在于列表中
+            if self._check_emulator_exists(name):
+                logger.info(f"模拟器 {name} 创建成功")
+                return True
+
+            # 如果上面没找到，再检查命令输出中是否有明显的成功标识
+            stdout_lower = (result.stdout or "").lower()
+            # add命令成功时可能返回空或者包含一些信息
+            # 只要没有明显的错误标识，就认为是成功
+            stderr_lower = (result.stderr or "").lower()
+            critical_errors = ["error", "failed", "cannot", "不支持"]
+
+            # 如果stderr中有严重错误关键词，且模拟器未创建成功，才判定为失败
+            if any(kw in stderr_lower for kw in critical_errors):
+                if not self._check_emulator_exists(name):
+                    logger.error(f"模拟器创建失败: {result.stderr}")
+                    return False
+
+            # 如果命令执行完成（没超时）且模拟器存在，认为成功
+            logger.info(f"模拟器 {name} 创建成功")
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"创建模拟器 {name} 命令超时")
+            return False
+        except Exception as e:
+            logger.error(f"创建模拟器 {name} 时发生错误: {e}")
+            return False
+
+    def delete_emulator(self, username=None):
+        """删除模拟器实例
+
+        Args:
+            username: 模拟器名称，默认使用 gmail_username
+
+        Returns:
+            bool: 删除是否成功
+        """
+        name = username or self.gmail_username
+        try:
+            logger.info(f"开始删除模拟器: {name}")
+
+            # 先检查模拟器是否已存在
+            if not self._check_emulator_exists(name):
+                logger.info(f"模拟器 {name} 已存在，跳过创建")
+                return True
+
+            result = subprocess.run(
+                f'dnconsole.exe remove --name "{name}"',
+                cwd=self.LDPLAYER9_DIR,
+                shell=True,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=60,
+            )
+
+            if result.stdout:
+                logger.info(f"[STDOUT] {result.stdout}")
+            if result.stderr:
+                logger.warning(f"[STDERR] {result.stderr}")
+
+            # 等待一下让模拟器创建完成
+            time.sleep(3)
+
+            # 最可靠的检查方式：再次检查模拟器是否存在于列表中
+            if not self._check_emulator_exists(name):
+                logger.info(f"模拟器 {name} 删除成功")
+                return True
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"删除模拟器 {name} 命令超时")
+            return False
+        except Exception as e:
+            logger.error(f"删除模拟器 {name} 时发生错误: {e}")
+            return False
+
+    def _check_emulator_exists(self, name):
+        """检查模拟器是否已存在
+
+        Args:
+            name: 模拟器名称
+
+        Returns:
+            bool: 是否存在
+        """
+        try:
+            result = subprocess.run(
+                'dnconsole.exe list2',
+                cwd=self.LDPLAYER9_DIR,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            if result.stdout:
+                # list2 返回格式: 索引,标题,顶层窗口句柄,绑定窗口句柄,是否进入android,进程PID,VBox进程PID
+                for line in result.stdout.strip().split('\n'):
+                    if name in line:
+                        logger.info(f"找到已存在的模拟器: {name}")
+                        return True
+
+            return False
+        except Exception as e:
+            logger.warning(f"检查模拟器是否存在时出错: {e}")
+            return False
+
+    def modify_emulator(self, username=None, resolution=None, cpu=None, memory=None):
+        """修改模拟器属性
+
+        Args:
+            username: 模拟器名称，默认使用 gmail_username
+            resolution: 分辨率，格式 '宽,高,DPI'，如 '1080,1920,480'
+            cpu: CPU核心数，值为 1, 2, 3, 4
+            memory: 内存大小，值为 512, 1024, 2048, 4096, 8192
+
+        Returns:
+            bool: 修改是否成功
+        """
+        name = username or self.gmail_username
+        try:
+            logger.info(f"开始修改模拟器属性: {name}")
+
+            # 构建修改参数
+            cmd_parts = [f'dnconsole.exe modify --name "{name}" --root 0']
+
+            if resolution:
+                cmd_parts.append(f"--resolution {resolution}")
+
+            if cpu:
+                cmd_parts.append(f"--cpu {cpu}")
+
+            if memory:
+                cmd_parts.append(f"--memory {memory}")
+
+            # 添加 imei auto 随机生成
+            cmd_parts.append("--imei auto")
+
+            cmd = ' '.join(cmd_parts)
+            logger.info(f"执行命令: {cmd}")
+
+            result = subprocess.run(
+                cmd,
+                cwd=self.LDPLAYER9_DIR,
+                shell=True,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+
+            if result.stdout:
+                logger.info(f"[STDOUT] {result.stdout}")
+            if result.stderr:
+                logger.warning(f"[STDERR] {result.stderr}")
+
+            # 检查是否修改成功
+            stderr_lower = (result.stderr or "").lower()
+            error_keywords = ["error", "失败", "failed", "not found", "不存在", "cannot"]
+
+            if result.returncode != 0 or any(kw in stderr_lower for kw in error_keywords):
+                logger.error(f"模拟器属性修改失败: {result.stderr}")
+                return False
+
+            logger.info(f"模拟器 {name} 属性修改成功")
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"修改模拟器 {name} 属性命令超时")
+            return False
+        except Exception as e:
+            logger.error(f"修改模拟器 {name} 属性时发生错误: {e}")
+            return False
+
+    def set_proxy_cmd(self, port):
+        try:
+            logger.info(f"开始设置代理: {port}")
+            adb_cmd = f'adb -s {self.udid} shell settings put global http_proxy 10.200.10.209:{port}'
+            result = subprocess.run(adb_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if result.stdout:
+                logger.info(f"[STDOUT] {result.stdout}")
+            if result.stderr:
+                logger.warning(f"[STDERR] {result.stderr}")
+
+            if result.returncode != 0:
+                logger.error(f"设置代理失败，退出码: {result.returncode}")
+                return False
+
+            # 验证代理是否设置成功
+            if not self._verify_proxy_cmd(port):
+                logger.error("代理验证失败")
+                return False
+
+            return True
+        except Exception as e:
+            logger.error(f'设置代理时发生错误: {e}')
+            raise SetProxyError(f'设置代理时发生错误: {e}')
+
+    def _verify_proxy_cmd(self, port):
+        """验证代理是否设置成功"""
+        try:
+            expected_proxy = f"10.200.10.209:{port}"
+            verify_cmd = f'adb -s {self.udid} shell settings get global http_proxy'
+            result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            current_proxy = result.stdout.strip()
+
+            if current_proxy == expected_proxy:
+                logger.info(f"代理验证成功: {current_proxy}")
+                return True
+            else:
+                logger.warning(f"代理验证失败，当前代理: {current_proxy}, 预期: {expected_proxy}")
+                return False
+        except Exception as e:
+            logger.error(f"验证代理时发生错误: {e}")
+            return False
 
     def start_device(self):
         try:
@@ -261,7 +588,8 @@ class AppiumldAuto:
             # 等待ADB新增设备，获取目标UDID
             target_udid = self._wait_for_new_adb_device(base_adb_devices)
             if not target_udid:
-                raise LdDeviceStartError(f"模拟器[{self.gmail_username}]ADB设备匹配失败，超时{self.ADB_DEVICE_TIMEOUT}秒")
+                raise LdDeviceStartError(
+                    f"模拟器[{self.gmail_username}]ADB设备匹配失败，超时{self.ADB_DEVICE_TIMEOUT}秒")
 
             self.udid = target_udid
             logger.info(f"模拟器[{self.gmail_username}]启动成功，ADB设备标识: {self.udid}")
@@ -382,16 +710,16 @@ class AppiumldAuto:
         return None
 
     def _click_element(self, locator, timeout=20):
-        WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located(locator)).click()
+        WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator)).click()
 
     def _input_text(self, locator, text, timeout=20):
-        WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located(locator)).send_keys(text)
+        WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator)).send_keys(text)
 
     def _clear_text(self, locator, timeout=20):
-        WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located(locator)).clear()
+        WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator)).clear()
 
     def _get_element_text(self, locator, timeout=20):
-        return WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located(locator)).text
+        return WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator)).text
 
     def wait_for_clickable(self, locator, timeout=20):
         try:
@@ -401,6 +729,32 @@ class AppiumldAuto:
         except TimeoutException:
             return None
 
+    def swipe_to_bottom(self, max_swipes=10, min_swipes=2, length=0.3):
+        """
+        循环滑动到底部
+        @param max_swipes: 最大滑动次数，默认10次
+        @param min_swipes: 最小滑动次数，默认3次（确保滑得够深）
+        """
+        screen_size = self.driver.get_window_size()
+        width = screen_size['width']
+        height = screen_size['height']
+
+        start_x = width / 2
+        start_y = height * 0.8
+        end_x = width / 2
+        end_y = height * length
+
+        # 记录滑动前页面高度
+        last_page_height = 0
+        for i in range(max_swipes):
+            self.driver.swipe(start_x, start_y, end_x, end_y, duration=800)
+            time.sleep(0.5)
+            if i >= min_swipes:
+                logger.info(f'已滑动{i + 1}次')
+                break
+        else:
+            print(f'已达到最大滑动次数{max_swipes}')
+
     def unlock_device(self):
         try:
             # 点击 BACK 键显示锁屏界面
@@ -409,6 +763,7 @@ class AppiumldAuto:
                 time.sleep(1)
 
             # 检查是否有锁屏，是否需要解锁屏幕
+            time.sleep(5)
             if self.wait_for_clickable(LdAppLocators.system_app):
                 logger.info('模拟器解锁成功！')
                 return True
@@ -485,7 +840,7 @@ class AppiumldAuto:
             return False
         except Exception as e:
             logger.error(f'设置代理时发生错误: {e}')
-            raise SetProxyError(f'设置代理时发生错误: {e}')
+            raise
 
     def _navigate_to_proxy_settings(self):
         """导航到代理设置界面"""
@@ -565,45 +920,65 @@ class AppiumldAuto:
             logger.error(f'配置代理设置失败: {e}')
             return False
 
-    def login_gamil(self):
+    def login_gmail(self):
         """登录Gmail账号 - 完整的登录流程处理"""
         try:
             logger.info(f'[{self.gmail_username}] 开始Gmail登录流程')
+            # 返回到setting主界面
+            logger.info('打开设置应用')
+            self.driver.activate_app('com.android.settings')
+            time.sleep(2)
 
-            # 打开Play Store应用
-            logger.info(f'[{self.gmail_username}] 步骤1: 打开Play Store')
-            self._click_element(LdAppLocators.play_store_app)
+            # 滑动找到账号选项
+            self.swipe_to_bottom()
+            self._click_element(LdAppLocators.account_btn)
+
+            # 删除员账号
+            target_username = self.gmail_username.lower()
+            if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR,
+                                        f'new UiSelector().text("{target_username}")')):
+                logger.info(f'[{self.gmail_username}] 步骤1: 删除账号')
+                self._click_element(LdAppLocators.gmail_account)
+                time.sleep(1)
+                self._click_element(LdAppLocators.remove_btn)
+                time.sleep(1)
+                self._click_element(LdAppLocators.confirm_remove)
+                time.sleep(20)
+
+                if not self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR,
+                                                f'new UiSelector().text("{target_username}")')):
+                    logger.info(f'[{self.gmail_username}] 删除账号成功')
+                else:
+                    logger.warning(f'[{self.gmail_username}] 退出失败')
+                    raise LoginGmailError(f'[{self.gmail_username}] 退出失败')
+
+            # 开始添加，输入账号密码账号
+            logger.info(f'[{self.gmail_username}] 步骤2: 输入账号')
+            self._click_element(LdAppLocators.add_account_btn)
+
+            if self.wait_for_clickable(LdAppLocators.choose_google_ele):
+                self._click_element(LdAppLocators.choose_google)
 
             time.sleep(30)
-
-            # 查看账号是否已登录
-            if self.wait_for_clickable(LdAppLocators.gmail_login_succ, 10):
-                logger.info(f'[{self.gmail_username}] Gmail已登录')
-                return True
-
-            # 处理账号验证流程
-            logger.info(f'[{self.gmail_username}] 步骤2: 处理账号验证')
-            self._click_element(LdAppLocators.veritry_next_btn, timeout=60)
+            logger.info(f'开始输入账号')
+            self._input_text(LdAppLocators.input_ele, self.gmail_username)
+            logger.info(f'[{self.gmail_username}] 点击确认按钮')
+            self._click_element(LdAppLocators.next_button)
             time.sleep(3)
 
             # 检查机器人验证
             if self.wait_for_clickable(LdAppLocators.robot_ele, timeout=10):
-                logger.warning(f'[{self.gmail_username}] 触发机器人验证，账号可能有问题')
-                raise GmailAccountError
+                logger.error(f'[{self.gmail_username}] 触发机器人验证，账号可能有问题')
+                raise GmailAccountError(f'[{self.gmail_username}] 触发机器人验证，账号可能有问题')
 
             # 处理密码输入
-            logger.info(f'[{self.gmail_username}] 步骤3: 检查是否需要输入密码')
+            logger.info(f'[{self.gmail_username}] 步骤3: 要输入密码')
             password = self.youtube_info.get('password', self.youtube_info['password'])  # 使用预加载的密码，默认值作为fallback
-            logger.info(f'[{self.gmail_username}] 发现密码输入框，尝试输入密码')
             self._input_text(LdAppLocators.input_ele, password)
-            password_entered = True
-
-            if password_entered:
-                # 点击下一步/登录按钮
-                if self.wait_for_clickable(LdAppLocators.next_button, timeout=5):
-                    logger.info(f'[{self.gmail_username}] 点击确认按钮')
-                    self._click_element(LdAppLocators.next_button)
-                    time.sleep(3)
+            if self.wait_for_clickable(LdAppLocators.next_button, timeout=5):
+                logger.info(f'[{self.gmail_username}] 点击确认按钮')
+                self._click_element(LdAppLocators.next_button)
+                time.sleep(3)
 
             # 验证登录结果
             logger.info(f'[{self.gmail_username}] 步骤4: 验证登录结果、查看是否需要验证')
@@ -617,14 +992,42 @@ class AppiumldAuto:
                 self._input_text(LdAppLocators.confirm_email_input, confirm_email)
                 self._click_element(LdAppLocators.next_button)
 
-            if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Accept")'), timeout=20):
-                logger.info(f'[{self.gmail_username}] 点击Accept按钮')
-                self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Accept")'))
+            if self.wait_for_clickable(LdAppLocators.confirm_phone):
+                logger.error(f'[{self.gmail_username}] 需要验证手机号')
+                input(f'[{self.gmail_username}] 需要验证手机号')
+
+            # 检查是否需要确认使用人
+            if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().resourceId("headingText")')):
+                head_txt = self._get_element_text(
+                    (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().resourceId("headingText")'), 20)
+                if head_txt == 'Who will be using this device?':
+                    self._click_element(LdAppLocators.next_button)
+                    time.sleep(2)
+
+            # 点击skip和accept
+            time.sleep(5)
+            self.swipe_to_bottom()
+            if self.wait_for_clickable(LdAppLocators.skip_btn):
+                self._click_element(LdAppLocators.skip_btn)
+            self._click_element(LdAppLocators.agree_btn)
+
+            # 滑动到底部
+            time.sleep(5)
+            if self.wait_for_clickable(LdAppLocators.more_btn):
+                self.swipe_to_bottom()
+                self._click_element(LdAppLocators.more_btn)
 
             # 检查是否登录成功（检查是否有成功并回到主界面）
-            time.sleep(10)
-            # if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Not now")'), timeout=10):
-            self.driver.press_keycode(4)
+            self.driver.press_keycode(3)
+
+            logger.info("正在启动Play Store...")
+            self._click_element((AppiumBy.ACCESSIBILITY_ID, 'Play Store'), timeout=60)
+            time.sleep(3)  # 等待Play Store完全加载
+
+            if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Accept")')):
+                self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Accept")'))
+            else:
+                self.driver.press_keycode(4)
 
             if self.wait_for_clickable(LdAppLocators.gmail_login_succ):
                 logger.info(f'[{self.gmail_username}] Gmail登录流程完成')
@@ -635,41 +1038,46 @@ class AppiumldAuto:
             raise e
         except GmailAccountError:
             raise
+        except GmailPhoneError:
+            raise
         except LoginGmailError:
             raise
         except Exception as e:
             logger.error(f'[{self.gmail_username}] Gmail登录过程中发生错误: {e}')
-            raise LoginGmailError(f'[{self.gmail_username}] Gmail登录失败: {str(e)}')
+            raise LoginGmailError(f'[{self.gmail_username}] Gmail登录过程中发生错误: {e}')
 
     def install_apple(self):
         logger.info(f"开始下载apple music")
         try:
+            if self.return_to_home_and_check_installation(target_app='Apple Music'):
+                logger.info(f'[{self.gmail_username}] 已下载Apple Music')
+                return True
+
             # 等待并点击Play Store应用
             self.driver.press_keycode(3)
             logger.info("正在启动Play Store...")
             self._click_element((AppiumBy.ACCESSIBILITY_ID, 'Play Store'), timeout=60)
-            time.sleep(3)  # 等待Play Store完全加载
+            time.sleep(5)  # 等待Play Store完全加载
 
             # 点击搜索按钮
             logger.info("正在点击搜索按钮...")
             search_x, search_y = 450, 155
-            if self.wait_for_clickable(LdAppLocators.search):
-                for _ in range(2):
-                    self._click_element(LdAppLocators.search)
-            else:
-                self.driver.tap([(search_x, search_y)], duration=100)
+            self.driver.tap([(search_x, search_y)], duration=100)
             time.sleep(2)
 
             # 等待搜索输入框出现并输入搜索内容
             logger.info("正在输入搜索内容...")
-            self._input_text(
-                (
-                    AppiumBy.ANDROID_UIAUTOMATOR,
-                    'new UiSelector().className("android.widget.EditText")'
-                ),
-                'apple music'
-            )
-            time.sleep(2)
+            if self.wait_for_clickable(LdAppLocators.search_input):
+                self._input_text(LdAppLocators.search_input, 'apple music')
+                time.sleep(2)
+            else:
+                logger.error("搜索输入框未找到，开始重试")
+                self.driver.press_keycode(4)
+                self.driver.tap([(search_x, search_y)], duration=100)
+                time.sleep(2)
+                self._input_text(LdAppLocators.search_input, 'apple music')
+                time.sleep(2)
+
             # 使用回车键搜索
             logger.info("正在执行搜索...")
             self.driver.press_keycode(66)  # 66是Android的KEYCODE_ENTER
@@ -677,19 +1085,26 @@ class AppiumldAuto:
 
             # 查找并点击Apple Music应用
             logger.info("正在查找Apple Music应用...")
-            try:
-                self._click_element((AppiumBy.ACCESSIBILITY_ID, 'Apple Music\nApple\n'))
-            except:
-                self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Apple Music")'))
+            apple_music_ele = ['Apple Music, Apple, Star rating: 4.6, Teen, In-app purchases',
+                               'Apple Music, Apple, Star rating: 4.3, Parental guidance, In-app purchases']
+            for ele in apple_music_ele:
+                if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().description("{ele}")')):
+                    self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().description("{ele}")'),
+                                        timeout=10)
+                    break
             time.sleep(2)
 
             # 点击安装按钮
             logger.info("正在点击安装按钮...")
-            self._click_element(
-                (AppiumBy.ANDROID_UIAUTOMATOR,
-                 'new UiSelector().className("android.widget.Button").instance(0)')
-            )
+            self._click_element(LdAppLocators.install_btn)
             time.sleep(2)
+            
+            # 检查是否需要确认账号
+            if self.wait_for_clickable(LdAppLocators.complete_account_locator, timeout=10):
+                self._click_element(LdAppLocators.complete_continue)
+                self._click_element(LdAppLocators.skip_btn)
+                time.sleep(5)
+
             # 等待下载完成 - 监控下载进度
             logger.info("正在下载Apple Music...")
             max_wait_time = 120  # 最大等待2分钟
@@ -698,8 +1113,8 @@ class AppiumldAuto:
             for i in range(max_wait_time // 5):  # 每5秒检查一次
                 try:
                     # 检查是否还有正在下载的标识
-                    still_installing = self.driver.find_elements(AppiumBy.XPATH,
-                                                                 '//android.widget.TextView[@text="Verified by Play Protect"]')
+                    still_installing = self.driver.find_elements(AppiumBy.ANDROID_UIAUTOMATOR,
+                                                                 'new UiSelector().text("Verified by Play Protect")')
 
                     if not still_installing:
                         logger.info("✓ 下载完成，应用已安装")
@@ -721,20 +1136,148 @@ class AppiumldAuto:
 
             # 返回桌面检查是否安装成功
             logger.info("下载完成，返回桌面检查安装状态...")
-            self.return_to_home_and_check_installation()
+            return self.return_to_home_and_check_installation(target_app='Apple Music')
 
         except KeyboardInterrupt as e:
             raise e
-        except InstallAppleError:
-            raise
         except Exception as e:
             logger.error(f'[{self.gmail_username}] 下载Apple Music失败: {e}')
-            raise InstallAppleError(f'[{self.gmail_username}] 下载Apple Music失败: {str(e)}')
+            raise InstallAppError(f'[{self.gmail_username}] 下载Apple Music失败: {str(e)}')
 
-    def start_premium(self):
-        pass
+    def start_premium(self, card_4):
+        try:
+            logger.info(f'[{self.apple_username}] 开始开会员流程')
+            self.driver.activate_app('com.apple.android.music')
+            time.sleep(5)
+            logger.info("关闭弹窗按钮")
+            for locators in [LdAppLocators.apple_continue, LdAppLocators.do_not_send]:
+                if self.wait_for_clickable(locators, timeout=10):
+                    self._click_element(locators)
 
-    def return_to_home_and_check_installation(self):
+            time.sleep(5)
+            logger.info("返回Apple Music主界面")
+            if self.wait_for_clickable((AppiumBy.ACCESSIBILITY_ID, 'Close page'), timeout=8):
+                self.driver.press_keycode(4)
+            time.sleep(3)
+
+            # 检查是否登录
+            have_login = False
+            logger.info("检查是否已登录账号")
+            self._click_element(LdAppLocators.more_option)
+            if self.wait_for_clickable(LdAppLocators.apple_account, timeout=10):
+                have_login = True
+                logger.debug(f"[{self.apple_username}] 已登录")
+
+            if not have_login:
+                self._click_element(LdAppLocators.setting)
+                time.sleep(2)
+
+                logger.info("正在点击登录按钮...")
+                self._click_element(LdAppLocators.apple_login)
+
+                logger.info(f"[{self.apple_username}] 开始登录apple账号")
+                self._input_text(LdAppLocators.apple_username_input, self.apple_username)
+                self._input_text(LdAppLocators.apple_password_input, self.apple_info['password'])
+                self._click_element(LdAppLocators.appel_login_continue)
+                time.sleep(10)
+
+                if self.wait_for_clickable(LdAppLocators.theme_btn):
+                    logger.info(f'[{self.apple_username}] 登录成功')
+                    self._click_element(LdAppLocators.navigate_up)
+
+                self._click_element(LdAppLocators.more_option)
+                self._click_element(LdAppLocators.apple_account)
+                time.sleep(2)
+            else:
+                self._click_element(LdAppLocators.apple_account)
+
+            logger.info(f"[{self.apple_username}] 开始开通会员")
+            self._click_element(LdAppLocators.subscribe_btn)
+            time.sleep(5)
+            self._click_element(LdAppLocators.start_subscribe)
+            time.sleep(2)
+
+            logger.info(f"[{self.apple_username}] 开始检查卡号")
+            card_selector = f'new UiSelector().text("Visa-{card_4}")'
+            if not self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, card_selector)):
+                logger.warning(f'[{self.apple_username}] 卡号不正确，重新选取卡号')
+                self._click_element((AppiumBy.ANDROID_UIAUTOMATOR,
+                                     'new UiSelector().className("android.widget.ImageView").instance(5)'))
+                time.sleep(5)
+                self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, card_selector))
+            else:
+                logger.info(f'[{self.apple_username}] 卡号正确')
+            time.sleep(5)
+
+            logger.info(f"[{self.apple_username}] 开始付费")
+            self._click_element((AppiumBy.CLASS_NAME, 'android.widget.Button'))
+            time.sleep(1)
+            if self.wait_for_clickable((AppiumBy.CLASS_NAME, 'android.widget.CheckBox')):
+                logger.info(f'[{self.apple_username}] 输入密码确认账号')
+                self._click_element((AppiumBy.CLASS_NAME, 'android.widget.CheckBox'))
+                self._input_text(LdAppLocators.input_ele, self.youtube_info['password'])
+                self._click_element((AppiumBy.CLASS_NAME, 'android.widget.Button'))
+
+            logger.info(f'[{self.apple_username}] 等待支付过程...')
+            
+            # 处理需要填写地址的情况 
+            if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Street address")')):
+                logger.debug(f"[{self.apple_username}] 需要填写地址")
+                self.swipe_to_bottom(max_swipes=1, min_swipes=0, length=0.7)
+
+                # 获取当前页面的zip文本，匹配对应zip的Street address
+                zip_text = self._get_element_text((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().className("android.widget.EditText").instance(4)'))
+                street_address = None
+                for addr in addresses:
+                    if addr.get("zip") == zip_text:
+                        street_address = addr.get("Street address", "")
+                        logger.debug(f"[{self.apple_username}] 匹配到地址: {street_address}")
+                        break
+                else:
+                    logger.warning(f"[{self.apple_username}] 未在YAML中找到邮编 {zip_text} 对应的地址")
+                    street_address = "14386 SW 36th St"  # 兜底地址
+
+                # 步骤3：定位Street Address输入框并填写
+                if street_address:
+                    # 输入匹配到的街道地址
+                    self._input_text(LdAppLocators.street_address_locator, street_address)
+                    logger.debug(f"[{self.apple_username}] 成功填写街道地址: {street_address}")
+
+                    self.swipe_to_bottom(max_swipes=10, min_swipes=4, length=0.7)
+                    self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Save")'))
+                    time.sleep(2)
+                    self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Confirm")'))
+                    time.sleep(5)
+                    self._click_element((AppiumBy.CLASS_NAME, 'android.widget.Button'))
+                    time.sleep(10)
+
+            for btn_text in ["Not now", "No thanks"]:
+                if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().text("{btn_text}")'), timeout=3):
+                    self._click_element((AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().text("{btn_text}")'))
+                    break
+
+            time.sleep(10)
+
+            logger.info(f"[{self.apple_username}] 检查是否开通成功")
+            if self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Upgrade to Family")')):
+                logger.info(f"[{self.apple_username}] 开通成功")
+                return True
+            elif self.wait_for_clickable((AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("Error")')):
+                logger.warning(f"[{self.apple_username}] 支付失败")
+                return False
+            else:
+                logger.warning(f"[{self.apple_username}] 检查异常 - 未检测到会员开通标志")
+                return False
+
+        except KeyboardInterrupt as e:
+            raise e
+        except InstallAppError:
+            raise
+        except Exception as e:
+            logger.error(f'[{self.apple_username}] 开通会员失败: {str(e)}')
+            raise StartPremiumError(f'[{self.apple_username}] 开通会员失败: {str(e)}')
+
+    def return_to_home_and_check_installation(self, target_app):
         """返回桌面并检查Apple Music是否安装成功"""
         try:
             # 方法1: 使用HOME键返回桌面
@@ -755,16 +1298,139 @@ class AppiumldAuto:
 
             # 检查Apple Music应用图标是否存在
             logger.info("正在检查Apple Music应用图标...")
-            if self.wait_for_clickable((AppiumBy.ACCESSIBILITY_ID, 'Apple Music')):
-                logger.info("✓ Apple Music应用图标已找到，安装成功！")
+            if self.wait_for_clickable((AppiumBy.ACCESSIBILITY_ID, target_app)):
+                logger.info(f"✓ {target_app}应用图标已找到，安装成功！")
                 return True
             else:
-                logger.warning("✗ 未找到Apple Music应用图标，可能安装失败")
+                logger.warning(f"✗ 未找到{target_app}应用图标，可能安装失败")
                 return False
         except Exception as e:
             logger.warning(f"检查安装状态时出现错误: {e}")
             return False
 
+    def uninstall_google_apps(self):
+        """卸载 Google 系统应用 + YouTube / YouTube Music"""
+        # 系统应用需要用 ADB 命令卸载
+        adb_system_apps = [
+            "com.google.android.gms",  # Google Play services
+        ]
+        # 普通应用可以用 dnconsole 命令
+        dnconsole_apps = [
+            "com.android.vending",  # Google Play Store
+            "com.google.android.gsf",  # Google Services Framework
+            "com.apple.android.music",  # Apple Music
+            "com.google.android.youtube",  # YouTube
+            "com.google.android.apps.youtube.music",  # YouTube Music
+        ]
+
+        # 先用 ADB 卸载系统应用
+        for pkg in adb_system_apps:
+            logger.info(f"正在通过ADB卸载系统应用: {pkg}")
+
+            # 先尝试停用应用
+            adb_disable_cmd = f'adb -s {self.udid} shell pm disable-user --user 0 {pkg}'
+            subprocess.run(adb_disable_cmd, shell=True, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(1)
+
+            # 再尝试卸载
+            adb_cmd = f'adb -s {self.udid} shell pm uninstall --user 0 {pkg}'
+            result = subprocess.run(
+                adb_cmd,
+                shell=True,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(2)
+            if result.stdout:
+                logger.info(f"[STDOUT] {result.stdout}")
+            if result.stderr:
+                logger.warning(f"[STDERR] {result.stderr}")
+            # 检查是否成功 - Success 表示成功
+            if "Success" in result.stdout:
+                logger.info(f"卸载 {pkg} 成功")
+            elif "DELETE_FAILED_DEVICE_POLICY_MANAGER" in result.stderr:
+                # 设备策略管理失败，尝试强制停用
+                logger.warning(f"设备策略保护，无法卸载 {pkg}，尝试强制停用...")
+                force_disable_cmd = f'adb -s {self.udid} shell pm disable-user --user 0 --stream {pkg}'
+                subprocess.run(force_disable_cmd, shell=True, check=False)
+                logger.info(f"已强制停用 {pkg}")
+            else:
+                logger.warning(f"卸载 {pkg} 结果: {result.stdout} {result.stderr}")
+
+        # 再用 dnconsole 卸载普通应用
+        for pkg in dnconsole_apps:
+            logger.info(f"正在卸载: {pkg}")
+            result = subprocess.run(
+                f'dnconsole.exe uninstallapp --name "{self.gmail_username}" --packagename {pkg}',
+                cwd=self.LDPLAYER9_DIR,
+                shell=True,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(2)
+            if result.stdout:
+                logger.info(f"[STDOUT] {result.stdout}")
+            if result.stderr:
+                logger.warning(f"[STDERR] {result.stderr}")
+            # 检查是否成功卸载
+            if "success" in result.stdout.lower() or not result.stderr:
+                logger.info(f"卸载 {pkg} 成功")
+            else:
+                logger.warning(f"卸载 {pkg} 结果未知: {result.stdout} {result.stderr}")
+
+    def install_google_service(self):
+        try:
+            logger.info(f'{self.gmail_username} 开始重新安装google框架')
+            self.driver.activate_app('com.android.googleinstaller')
+
+            if self.wait_for_clickable((AppiumBy.CLASS_NAME, 'android.widget.Button')):
+                self._click_element((AppiumBy.CLASS_NAME, 'android.widget.Button'))
+
+            # 等待下载完成 - 监控下载进度
+            logger.info("正在下载google框架")
+            max_wait_time = 240  # 最大等待2分钟
+            download_complete = False
+
+            for i in range(max_wait_time // 5):  # 每5秒检查一次
+                try:
+                    # 检查是否还有正在下载的标识
+                    finish_install = self.driver.find_elements(AppiumBy.ANDROID_UIAUTOMATOR,
+                                                               'new UiSelector().text("安装完成")')
+
+                    if finish_install:
+                        logger.info("✓ 下载完成，应用已安装")
+                        download_complete = True
+                        break
+                    elif not finish_install:
+                        # 如果既没有Install按钮也没有Open按钮，可能是其他状态
+                        logger.info(f"下载进行中... ({(i + 1) * 5}秒)")
+                    else:
+                        logger.info(f"下载进行中... ({(i + 1) * 5}秒)")
+
+                except Exception as e:
+                    logger.info(f"检查下载状态时出错: {e}")
+
+                time.sleep(5)
+            if not download_complete:
+                logger.info("⚠ 下载可能未完成，继续执行下一步...")
+
+            # 返回桌面检查是否安装成功
+            logger.info("下载完成，返回桌面检查安装状态...")
+            if self.return_to_home_and_check_installation(target_app='Play Store'):
+                return True
+            else:
+                return False
+        except KeyboardInterrupt as e:
+            raise e
+        except InstallAppError:
+            raise
+        except Exception as e:
+            logger.error(f'[{self.gmail_username}] 下载google框架失败: {e}')
+            raise InstallAppError(f'[{self.gmail_username}] 下载google框架失失败: {str(e)}')
 
 def close_device(username):
     """关闭模拟器，包含命令存在校验、重试、超时与结果验证。"""
@@ -787,8 +1453,8 @@ def close_device(username):
         except subprocess.TimeoutExpired as e:
             logger.warning(f"dnconsole 命令超时: {e}")
             raise LdDeviceQuitError("dnconsole quit 命令超时", username=username) from e
-            time.sleep(2)
 
+        time.sleep(2)
         # 日志输出
         if result.stdout:
             logger.info(f"[STDOUT] {result.stdout.strip()}")
@@ -813,44 +1479,272 @@ def close_device(username):
         raise LdDeviceQuitError(f"关闭模拟器过程中发生错误: {e}")
 
 
-def run(username):
+def read_file(file_path):
     try:
-        ldauto = AppiumldAuto(gmail_username=username, apple_username='')
-        ldauto.unlock_device()
-        # 设置YouTube/Gmail账号代理
-        youtube_port = ldauto.youtube_info.get('port', '')
-        ldauto.set_proxy(port=str(youtube_port))
-        ldauto.login_gamil()
-        ldauto.install_apple()
-        # 设置Apple账号代理
-        # apple_port = ldauto.apple_info.get('port', '')
-        # ldauto.set_proxy(port=str(apple_port) if apple_port else '')
-        ldauto.start_premium()
-        ldauto.driver.quit()
-    except LdDeviceStartError:
-        logger.error(f'[{username}] 模拟器启动失败')
-    except AppiumStartError:
-        logger.error(f'[{username}] Appium连接失败')
-    except SetProxyError:
-        logger.error(f'[{username}] 设置代理失败')
-    except LoginGmailError:
-        logger.error(f'[{username}] Gmail登录失败')
-    except GmailAccountError:
-        logger.error(f'[{username}] Gmail账号不可用')
-    except InstallAppleError:
-        logger.error(f'[{username}] 下载Apple Music失败')
-    except UnlockDeviceError:
-        logger.error(f'[{username}] 模拟器解锁失败')
-    finally:
+        with open(file_path, 'r') as f:
+            return [i.strip() for i in f]
+    except FileNotFoundError:
+        logger.error(f"File {file_path} not found.")
+        return []
+
+
+def write_file(file_name, data):
+    try:
+        with open(file_name, 'a') as f:
+            f.write(f'{data}\n')
+    except Exception as e:
+        logger.error(f"写入失败文件时出错: {e}")
+
+
+def run():
+    acc_list = read_file(prepare_file_path / 'new_device.txt')
+    apple_list = read_file(prepare_file_path / 'succ_apple.txt')
+    robot_list = read_file(prepare_file_path / 'robot_gmail.txt')
+    phone_list = read_file(prepare_file_path / 'phone_gmail.txt')
+    for username in acc_list:
+        if username in apple_list:
+            logger.info(f'{username} 已安装Apple Music')
+            continue
+        if username in robot_list:
+            logger.warning(f'{username} 触发人机验证')
+            continue
+        if username in phone_list:
+            logger.warning(f'{username} 需要手机验证')
+            continue
+
+        # 需要重试的异常（整体重试）
+        retry_exceptions = (LdDeviceStartError, AppiumStartError, SetProxyError, UnlockDeviceError, LoginGmailError)
+        max_retries = 2
+        for attempt in range(1, max_retries + 1):
+            try:
+                ldauto = AppiumldAuto(gmail_username=username, apple_username='')
+                ldauto.unlock_device()
+                # 设置YouTube/Gmail账号代理
+                youtube_port = ldauto.youtube_info.get('port', '')
+                ldauto.set_proxy(port=str(youtube_port))
+                ldauto.login_gmail()
+
+                # InstallAppError 单独重试，只重试 install_apple
+                install_success = False
+                try:
+                    install_success = ldauto.install_apple()
+                except InstallAppError:
+                    logger.warning(f'[{username}] 安装Apple Music失败，尝试重试')
+                    try:
+                        install_success = ldauto.install_apple()
+                    except InstallAppError as e:
+                        logger.error(f'[{username}] 重试安装Apple Music仍然失败: {e}')
+                        # 继续执行，记录失败但不中断流程
+
+                if install_success:
+                    write_file(prepare_file_path / 'succ_apple.txt', username)
+                ldauto.driver.quit()
+                break  # 成功，跳出重试循环
+            except (GmailAccountError, GmailPhoneError) as e:
+                logger.error(f'[{username}] {e}')
+                if isinstance(e, GmailAccountError):
+                    write_file(prepare_file_path / 'robot_gmail.txt', username)
+                elif isinstance(e, GmailPhoneError):
+                    write_file(prepare_file_path / 'phone_gmail.txt', username)
+                break  # 跳过当前账号，继续处理下一个
+            except retry_exceptions as e:
+                logger.warning(f'[{username}] 第 {attempt} 次执行失败: {e}')
+                if attempt < max_retries:
+                    logger.info(f'[{username}] 准备第 {attempt + 1} 次重试')
+                    try:
+                        close_device(username)
+                    except LdDeviceQuitError:
+                        pass
+                else:
+                    logger.error(f'[{username}] 达到最大重试次数 {max_retries}，执行失败')
+            except Exception as e:
+                logger.error(f'[{username}] 未知异常: {e}')
+                raise
+            finally:
+                try:
+                    close_device(username)
+                except Exception as e:
+                    logger.error(f'[{username}] 在 close_device 时发生错误: {e}')
+
+
+def run_install_google():
+    """安装 Google 框架的流程"""
+    acc_list = read_file(prepare_file_path / 'new_device.txt')
+    google_list = read_file(prepare_file_path / 'succ_google.txt')
+    for username in acc_list:
+        if username in google_list:
+            logger.info(f'{username} 已安装Google框架')
+            continue
         try:
-            close_device(username)
-        except LdDeviceQuitError:
-            logger.error(f'[{username}] 在 close_device 时发生错误')
+            ldauto = AppiumldAuto(gmail_username=username, apple_username='')
+            ldauto.unlock_device()
+            youtube_port = ldauto.youtube_info.get('port', '')
+            ldauto.set_proxy(port=str(youtube_port))
+            # 卸载旧的 Google 应用
+            ldauto.uninstall_google_apps()
+            # 安装 Google 服务框架
+            if ldauto.install_google_service():
+                write_file(prepare_file_path / 'succ_google.txt', username)
+            ldauto.driver.quit()
+        except LdDeviceStartError:
+            logger.error(f'[{username}] 模拟器启动失败')
+        except AppiumStartError:
+            logger.error(f'[{username}] Appium连接失败')
+        except UnlockDeviceError:
+            logger.error(f'[{username}] 模拟器解锁失败')
+        except InstallAppError:
+            logger.error(f'[{username}] 安装Google框架失败')
+        finally:
+            try:
+                close_device(username)
+            except LdDeviceQuitError:
+                logger.error(f'[{username}] 在 close_device 时发生错误')
+
+
+def run_create_emulator():
+    """创建模拟器并设置属性的流程"""
+    acc_list = read_file(prepare_file_path / 'new_device.txt')
+    created_list = read_file(prepare_file_path / 'created_emulator.txt')
+
+    for username in acc_list:
+        if username in created_list:
+            logger.info(f'{username} 已创建模拟器')
+            continue
+        try:
+            # 创建模拟器实例（不启动）
+            ldauto = AppiumldAuto(gmail_username=username, apple_username='', mode='create')
+
+            # 步骤1: 创建模拟器
+            logger.info(f'[{username}] 步骤1: 创建模拟器')
+            if not ldauto.create_emulator(username):
+                logger.error(f'[{username}] 创建模拟器失败')
+                continue
+
+            # 步骤2: 修改模拟器属性
+            logger.info(f'[{username}] 步骤2: 修改模拟器属性')
+            if not ldauto.modify_emulator(
+                    username=username,
+                    resolution='1080,1920,480',
+                    cpu=2,
+                    memory=2048
+            ):
+                logger.error(f'[{username}] 修改模拟器属性失败')
+                continue
+
+            # 记录成功的用户名
+            write_file(prepare_file_path / 'created_emulator.txt', username)
+            logger.info(f'[{username}] 模拟器创建并配置成功')
+
+        except Exception as e:
+            logger.error(f'[{username}] 创建模拟器时发生错误: {e}')
+            continue
+
+
+def run_start_premium():
+    """开通Appel google pay会员的流程"""
+    acc_list = read_file(prepare_file_path / 'premium_acc.txt')
+    premium_list = read_file(prepare_file_path / 'succ_premium.txt')
+    for acc_info in acc_list:
+        g_username = acc_info.split(':')[0]
+        a_username = acc_info.split(':')[1]
+        card_num = acc_info.split(':')[2]
+        if a_username in premium_list:
+            logger.info(f'{a_username} 已成功开通Google Pay')
+            continue
+        try:
+            ldauto = AppiumldAuto(gmail_username=g_username, apple_username=a_username)
+            ldauto.unlock_device()
+            # 开通Apple Music的 Google Pay会员
+            if ldauto.start_premium(card_num[-4:]):
+                write_file(prepare_file_path / 'succ_premium.txt', a_username)
+            ldauto.driver.quit()
+        except LdDeviceStartError:
+            logger.error(f'[{g_username}] 模拟器启动失败')
+        except AppiumStartError:
+            logger.error(f'[{g_username}] Appium连接失败')
+        except UnlockDeviceError:
+            logger.error(f'[{g_username}] 模拟器解锁失败')
+        except StartPremiumError:
+            logger.error(f'[{a_username}] 开通apple会员失败')
+        finally:
+            try:
+                close_device(g_username)
+            except LdDeviceQuitError:
+                logger.error(f'[{g_username}] 在 close_device 时发生错误')
+
+
+def run_delete_emulator():
+    """删除模拟器流程"""
+    acc_list = read_file(prepare_file_path / 'new_device.txt')
+    delete_list = read_file(prepare_file_path / 'delete_emulator.txt')
+
+    for username in acc_list:
+        if username in delete_list:
+            logger.info(f'{username} 已删除模拟器')
+            continue
+        try:
+            # 创建模拟器实例（不启动）
+            ldauto = AppiumldAuto(gmail_username=username, apple_username='', mode='create')
+
+            # 步骤1: 创建模拟器
+            logger.info(f'[{username}] 步骤1: 删除模拟器')
+            if not ldauto.delete_emulator(username):
+                logger.error(f'[{username}] 删除模拟器失败')
+                continue
+
+            # 记录成功的用户名
+            write_file(prepare_file_path / 'delete_emulator.txt', username)
+            logger.info(f'[{username}] 模拟器删除成功')
+
+        except Exception as e:
+            logger.error(f'[{username}] 创建模拟器时发生错误: {e}')
+            continue
+
+
+TASK_OPTIONS = [
+    ('install_apple', '安装Apple Music'),
+    ('install_google', '安装Google框架'),
+    ('create_emulator', '创建模拟器'),
+    ('delete_emulator', '删除模拟器'),
+    ('start_premium', '开通Apple Music会员')
+]
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Apple 账号自动化任务入口")
+    parser.add_argument(
+        '--task',
+        choices=[option[0] for option in TASK_OPTIONS],
+        help='指定要执行的任务'
+    )
+    return parser.parse_args()
+
+
+def prompt_task_selection():
+    print("请选择要执行的任务：")
+    for idx, (value, description) in enumerate(TASK_OPTIONS, start=1):
+        print(f"{idx}. {value} - {description}")
+    choice = input("请输入选项数字，默认 1: ").strip()
+    try:
+        choice_idx = int(choice) - 1 if choice else 0
+        if 0 <= choice_idx < len(TASK_OPTIONS):
+            return TASK_OPTIONS[choice_idx][0]
+    except ValueError:
+        pass
+    return TASK_OPTIONS[0][0]
 
 
 if __name__ == '__main__':
-    base_path = Path(__file__).parent.parent.parent
-    acc_path = ''
-    with open(acc_path, 'r') as f:
-        for i in f:
-            run(i.strip())
+    args = parse_arguments()
+    task = args.task or prompt_task_selection()
+
+    if task == 'install_apple':
+        run()
+    elif task == 'install_google':
+        run_install_google()
+    elif task == 'create_emulator':
+        run_create_emulator()
+    elif task == 'start_premium':
+        run_start_premium()
+    elif task == 'delete_emulator':
+        run_delete_emulator()
