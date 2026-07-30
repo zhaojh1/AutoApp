@@ -1,3 +1,16 @@
+"""
+问卷星自动填写脚本。
+
+执行流程：
+1. 读取问卷地址、提交次数和题目答题规则。
+2. 根据随机范围或选项概率生成本轮答案。
+3. 使用 Selenium 打开问卷并点击对应选项。
+4. 提交问卷，等待人工处理可能出现的验证码。
+5. 判断提交结果，并按设定的时间间隔重复执行。
+
+当前仅支持普通单选题和多选题。
+"""
+
 import time
 import random
 import os
@@ -16,33 +29,32 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 
 class WJXSubmitter:
+    """负责浏览器初始化、答案生成、页面填写和循环提交。"""
+
     def __init__(self, config_dict):  # 构造函数接收整个配置字典
+        # 保存完整配置，后续所有运行参数和答题规则均从这里读取。
         self.config = config_dict
         self.url = self.config.get("questionnaire_url")
 
         self.logger = logging.getLogger(__name__)
 
-        # 代理/换IP配置
-        self.proxy_list = self._load_proxy_list()
-        self.proxy_index = 0
-        self.rotate_proxy_each_submit = bool(self.config.get("rotate_proxy_each_submit", False))
-        self.current_proxy = self.config.get("default_proxy")
-
-        # Chrome driver 其他配置
+        # 页面元素的显式等待时间，单位为秒。
         self.page_load_timeout = self.config.get("page_load_timeout_seconds", 20)
         self.submit_button_timeout = self.config.get("submit_button_timeout_seconds", 10)
 
+        # 浏览器实例统一在这里创建，程序结束时由 close_driver() 关闭。
         self.driver = None
-        self._create_or_replace_driver(self.current_proxy)
+        self._create_or_replace_driver()
 
-    def _build_chrome_options(self, proxy=None):
+    def _build_chrome_options(self):
+        """根据配置生成 Chrome 浏览器启动参数。"""
         options = webdriver.ChromeOptions()
 
-        # 是否无头
+        # 无头模式不会显示浏览器窗口，调试时建议关闭。
         if self.config.get("headless"):
             options.add_argument('--headless')
 
-        # 可配置 UA
+        # 可自定义浏览器标识；默认配置通常使用移动端 UA。
         mobile_ua = self.config.get("mobile_user_agent")
         if mobile_ua:
             options.add_argument(f"user-agent={mobile_ua}")
@@ -58,22 +70,18 @@ class WJXSubmitter:
         else:
             self.logger.warning(f"chrome_binary_path 不存在: {chrome_binary_path}")
 
-        # 代理
-        if proxy:
-            options.add_argument(f'--proxy-server={proxy}')
-            self.logger.info(f"当前使用代理: {proxy}")
-
         return options
 
-    def _create_or_replace_driver(self, proxy=None):
-        """根据当前配置（可选代理）创建或替换 driver。"""
+    def _create_or_replace_driver(self):
+        """根据当前配置创建或替换 driver。"""
+        # 重建浏览器前先关闭旧实例，避免残留 Chrome 进程。
         if self.driver:
             try:
                 self.driver.quit()
             except Exception as e:
                 self.logger.warning(f"关闭旧浏览器时发生错误: {e}")
 
-        options = self._build_chrome_options(proxy)
+        options = self._build_chrome_options()
 
         driver_path = self.config.get("chromedriver_path", r"C:\Program Files\Google\Chrome\Application\chromedriver-win64\chromedriver.exe")
         if not os.path.exists(driver_path):
@@ -82,6 +90,7 @@ class WJXSubmitter:
         service = ChromeService(executable_path=driver_path) if os.path.exists(driver_path) else ChromeService()
         self.driver = webdriver.Chrome(service=service, options=options)
 
+        # 页面脚本执行前调整部分 navigator 属性，使语言和插件信息保持一致。
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": """
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -95,47 +104,17 @@ class WJXSubmitter:
         })
         self.generated_answers_cache = {}  # 用于存储已生成的答案，供条件问题判断
 
-    def _load_proxy_list(self):
-        """从配置或文件加载代理列表，格式支持 http://host:port。"""
-        proxy_list = []
-        config_proxies = self.config.get("proxies") or []
-        if isinstance(config_proxies, list):
-            proxy_list.extend([p.strip() for p in config_proxies if p.strip()])
-
-        proxy_file_path = self.config.get("proxies_file_path")
-        if proxy_file_path and os.path.exists(proxy_file_path):
-            try:
-                with open(proxy_file_path, "r", encoding="utf-8") as f:
-                    file_proxies = [line.strip() for line in f if line.strip()]
-                    proxy_list.extend(file_proxies)
-            except Exception as e:
-                self.logger.warning(f"读取代理文件失败 {proxy_file_path}: {e}")
-
-        # 去重同时保留顺序
-        seen = set()
-        unique_list = []
-        for p in proxy_list:
-            if p not in seen:
-                seen.add(p)
-                unique_list.append(p)
-        if unique_list:
-            self.logger.info(f"已加载 {len(unique_list)} 个代理。")
-        return unique_list
-
-    def _next_proxy(self):
-        """顺序轮换代理，列表为空时返回None。"""
-        if not self.proxy_list:
-            return None
-        proxy = self.proxy_list[self.proxy_index % len(self.proxy_list)]
-        self.proxy_index += 1
-        return proxy
-
     def get_random_int(self, min_val, max_val):
-        """生成指定范围内的随机整数"""
+        """生成包含上下限的随机整数，例如 1～3 会返回 1、2 或 3。"""
         return random.randint(min_val, max_val)
 
     def get_random_answer_by_probabilities(self, probabilities):
-        """根据给定的概率列表选择答案的索引（从1开始）。"""
+        """
+        根据概率列表选择一个选项，返回从 1 开始的选项编号。
+
+        例如 [0.2, 0.3, 0.5] 分别对应选项 1、2、3。
+        如果累计概率不足 1，剩余概率会落到最后一个选项。
+        """
         rand = random.random()
         cumulative_probability = 0
         for i, prob in enumerate(probabilities):
@@ -145,7 +124,12 @@ class WJXSubmitter:
         return len(probabilities)  # 容错处理
 
     def generate_answers_from_config(self):
-        """根据配置文件中的`questions`列表生成所有潜在答案"""
+        """
+        根据 questions 配置生成本轮提交使用的全部答案。
+
+        单选题答案保存为字符串，例如 "2"；
+        多选题答案保存为字符串列表，例如 ["1", "3"]。
+        """
         self.generated_answers_cache = {}  # 清空缓存
         question_configs = self.config.get("questions", [])
 
@@ -155,6 +139,7 @@ class WJXSubmitter:
             answer_logic = q_config.get("answer_logic", {})
             answer = None
 
+            # 单选题：在 min～max 范围内等概率选择一个选项。
             if q_type == "single_choice_random_int":
                 min_val = answer_logic.get("min")
                 max_val = answer_logic.get("max")
@@ -162,6 +147,7 @@ class WJXSubmitter:
                     answer = str(self.get_random_int(min_val, max_val))
                 else:
                     self.logger.warning(f"问题 {q_id} (类型: {q_type}) 的 answer_logic 缺少 min 或 max。")
+            # 单选题：按照 probabilities 中配置的概率选择一个选项。
             elif q_type == "single_choice_probabilities":
                 probabilities = answer_logic.get("probabilities")
                 options_count = answer_logic.get("options_count")
@@ -170,6 +156,7 @@ class WJXSubmitter:
                 else:
                     self.logger.warning(
                         f"问题 {q_id} (类型: {q_type}) 的概率配置错误 (probabilities长度与options_count不匹配或缺失)。")
+            # 多选题：先随机决定选择数量，再从范围内无重复抽取选项。
             elif q_type == "Multiple_choices_random_int":
                 min_val = answer_logic.get("min")
                 max_val = answer_logic.get("max")
@@ -178,6 +165,7 @@ class WJXSubmitter:
                     answer = [str(i) for i in random.sample(range(min_val, max_val + 1), num_choices)]
                 else:
                     self.logger.warning(f"问题 {q_id} (类型: {q_type}) 的 answer_logic 缺少 min 或 max。")
+            # 多选题：每个选项独立按照自身概率判断是否入选。
             elif q_type == "Multiple_choices_probabilities":
                 probabilities = answer_logic.get("probabilities")
                 options_count = answer_logic.get("options_count")
@@ -187,11 +175,12 @@ class WJXSubmitter:
                         if random.random() < probabilities[i]:
                             answer.append(str(i + 1))
                     if not answer:
-                        # 如果没有选择任何选项，随机选择一个
+                        # 禁止空选：全部选项都未命中时，随机补选一个。
                         answer = [str(self.get_random_int(1, options_count))]
             else:
                 self.logger.warning(f"问题 {q_id} 的类型 '{q_type}' 未知或未实现。")
 
+            # 只有成功生成的答案才写入缓存，条件题判断也使用此缓存。
             if answer is not None:
                 self.generated_answers_cache[q_id] = answer
             else:
@@ -201,7 +190,8 @@ class WJXSubmitter:
         return self.generated_answers_cache
 
     def check_condition(self, condition_config):
-        """检查条件是否满足"""
+        """检查条件题的前置题答案是否满足显示条件。"""
+        # 未提供条件配置时，按“满足条件”处理。
         if not condition_config:
             return True
 
@@ -214,12 +204,18 @@ class WJXSubmitter:
             # print(f"调试：条件判断失败，因为前置问题 {on_question_id} 没有生成答案。")
             return False
 
+        # 当前比较方式主要适用于前置题为单选题的情况。
         return actual_answer in required_answers
 
     def fill_question(self, question_id_num_str, answer_index_str):
-        """填写单个选择题"""
+        """
+        点击一道单选题或多选题的答案。
+
+        question_id_num_str 是问卷题号；
+        answer_index_str 可以是单个选项编号，也可以是多选编号列表。
+        """
         try:
-            # XPath保持通用，适用于问卷星单选按钮的常见结构
+            # 根据题号和选项号，拼接问卷星常见 label 结构的 XPath。
             option_xpath_lst = []
             if isinstance(answer_index_str, list):
                 for q_id in answer_index_str:
@@ -229,6 +225,7 @@ class WJXSubmitter:
                 option_xpath = f"//div[@id='div{question_id_num_str}']//div[@class='label'][@for='q{question_id_num_str}_{answer_index_str}']"
                 option_xpath_lst.append(option_xpath)
             for op_xpath in option_xpath_lst:
+                # 等待选项可点击，滚动到屏幕中间后再执行点击。
                 option_element = WebDriverWait(self.driver, 7).until(
                     EC.element_to_be_clickable((By.XPATH, op_xpath))
                 )
@@ -246,7 +243,8 @@ class WJXSubmitter:
             return False
 
     def submit_once(self):
-        """执行一次问卷填写和提交，基于配置文件"""
+        """完成一次“打开问卷—生成答案—填写—提交—判断结果”的流程。"""
+        # 第一步：打开问卷，并等待第一题出现在页面中。
         self.driver.get(self.url)
         try:
             WebDriverWait(self.driver, self.page_load_timeout).until(EC.presence_of_element_located((By.ID, "div1")))
@@ -262,12 +260,14 @@ class WJXSubmitter:
                 self.logger.error("错误: 问卷页面加载超时 (刷新后仍然失败)。")
                 return False
 
+        # 第二步：为本轮提交重新生成一套随机答案。
         self.generate_answers_from_config()
 
         question_configs = self.config.get("questions", [])
         questions_filled_count = 0
         questions_attempted_to_fill = 0
 
+        # 第三步：按照配置顺序逐题判断条件并填写。
         for q_config in question_configs:
             q_id = q_config.get("id")
             answer_to_fill = self.generated_answers_cache.get(q_id)
@@ -292,6 +292,7 @@ class WJXSubmitter:
 
         self.logger.info(f"成功填写 {questions_filled_count}/{questions_attempted_to_fill} 个激活且配置了答案的问题。")
 
+        # 第四步：找到提交按钮并提交问卷。
         try:
             submit_button = WebDriverWait(self.driver, self.submit_button_timeout).until(
                 EC.element_to_be_clickable((By.ID, "ctlNext"))
@@ -303,7 +304,7 @@ class WJXSubmitter:
 
             captcha_intervened = False  # 标记是否已因验证码暂停过
 
-            # Layui 弹窗验证码检测
+            # 第五步：检测 Layui 验证码弹窗，发现后最多等待 5 分钟供人工处理。
             layui_captcha_xpaths = [
                 "//div[contains(@class, 'layui-layer-dialog')]//div[@class='layui-layer-content' and contains(text(), '请在当前设备完成验证！')]",
                 "//div[contains(@class, 'layui-layer-dialog')]//div[contains(., '点击按钮开始智能验证')]",
@@ -335,6 +336,7 @@ class WJXSubmitter:
             current_url = self.driver.current_url
             page_source = self.driver.page_source
 
+            # 第六步：通过跳转地址和页面提示文字判断提交结果。
             if "aspx?activity" in current_url or "submit_successfully.aspx" in current_url or "感谢您的参与" in page_source:
                 self.logger.info("问卷提交成功！")
                 return True
@@ -372,25 +374,30 @@ class WJXSubmitter:
                 self.logger.info("浏览器已关闭。")
             except Exception as e:
                 self.logger.error(f"关闭浏览器时发生错误: {e}")
+            finally:
+                # 清空引用，避免主程序 finally 阶段重复关闭同一个浏览器。
+                self.driver = None
 
-    def run_loop(self):
-        """根据配置循环执行多次提交。"""
+    def run_loop(self, stop_event=None, progress_callback=None):
+        """
+        按照提交次数和随机时间间隔，循环执行 submit_once()。
+
+        stop_event 用于图形界面请求停止；不传时保持原命令行行为。
+        progress_callback 会在每次尝试结束后接收：
+        (已完成次数, 总次数, 成功次数)。
+        """
         num_submissions = self.config.get("number_of_submissions", 1)
         min_delay = self.config.get("min_delay_seconds", 60)
         max_delay = self.config.get("max_delay_seconds", 180)
 
         successful_submissions = 0
+        completed_submissions = 0
         for i in range(num_submissions):
-            self.logger.info(f"--- 开始第 {i + 1}/{num_submissions} 次提交 ---")
+            if stop_event is not None and stop_event.is_set():
+                self.logger.info("收到停止请求，不再开始新的提交。")
+                break
 
-            # 若开启了“每次提交前换IP”，则在此更换代理并重建driver
-            if self.rotate_proxy_each_submit:
-                self.current_proxy = self._next_proxy()
-                if self.current_proxy:
-                    self.logger.info(f"准备更换代理: {self.current_proxy}")
-                else:
-                    self.logger.info("未配置代理列表，继续使用本机网络。")
-                self._create_or_replace_driver(self.current_proxy)
+            self.logger.info(f"--- 开始第 {i + 1}/{num_submissions} 次提交 ---")
 
             try:
                 if self.submit_once():
@@ -400,21 +407,42 @@ class WJXSubmitter:
             except Exception as e:
                 self.logger.error(f"在第 {i + 1} 次提交过程中发生意外错误: {e}")
                 self.close_driver()  # 确保driver被关闭
-                time.sleep(10)  # 等待一段时间
+                if stop_event is not None and stop_event.wait(10):
+                    self.logger.info("等待恢复期间收到停止请求。")
+                    completed_submissions = i + 1
+                    if progress_callback:
+                        progress_callback(completed_submissions, num_submissions, successful_submissions)
+                    break
+                if stop_event is None:
+                    time.sleep(10)
                 self.logger.info("尝试重新初始化浏览器...")
-                # 重新初始化 WJXSubmitter 实例
+                # 使用原配置重新初始化当前对象和浏览器。
                 self.__init__(self.config)  # 使用保存的config重新初始化
 
+            completed_submissions = i + 1
+            if progress_callback:
+                progress_callback(completed_submissions, num_submissions, successful_submissions)
+
             if i < num_submissions - 1:
+                # 两次提交之间加入随机延时。
                 delay = random.uniform(min_delay, max_delay)
                 self.logger.info(f"等待 {delay:.2f} 秒后进行下一次提交...")
-                time.sleep(delay)
-        self.logger.info(f"--- 循环提交完成 --- 尝试: {num_submissions}, 成功: {successful_submissions}")
+                if stop_event is not None:
+                    if stop_event.wait(delay):
+                        self.logger.info("等待下一次提交期间收到停止请求。")
+                        break
+                else:
+                    time.sleep(delay)
+        self.logger.info(
+            f"--- 循环提交结束 --- 已完成: {completed_submissions}/{num_submissions}, "
+            f"成功: {successful_submissions}"
+        )
         self.close_driver()
+        return successful_submissions
 
 
 def generate_config_interactively():
-    """通过命令行交互引导用户生成配置字典"""
+    """通过命令行逐项询问参数，并生成 config.py 配置文件。"""
     logger.info("--- 开始配置问卷信息 ---")
     new_config_data = {}
     new_config_data["questionnaire_url"] = input("请输入问卷的完整URL链接: ").strip()
@@ -450,14 +478,6 @@ def generate_config_interactively():
     if new_config_data["max_delay_seconds"] < new_config_data["min_delay_seconds"]:
         logger.warning("警告：最大延时小于最小延时，已将最大延时设为与最小延时相同。")
         new_config_data["max_delay_seconds"] = new_config_data["min_delay_seconds"]
-
-    # 可选：代理/换IP配置
-    proxy_file_input = input("可选：代理列表文件路径(每行一个代理，如 http://ip:port，直接回车跳过): ").strip()
-    if proxy_file_input:
-        new_config_data["proxies_file_path"] = proxy_file_input
-    rotate_proxy_input = input("是否每次提交前更换代理? (是/否，默认否): ").strip().lower()
-    if rotate_proxy_input in ['是', 'y', 'yes']:
-        new_config_data["rotate_proxy_each_submit"] = True
 
     questions = []
     logger.info("--- 开始配置问卷问题 ---")
@@ -616,7 +636,7 @@ def generate_config_interactively():
 
 
 def load_config_from_py(config_path="config.py"):
-    """从指定的Python文件加载配置字典"""
+    """从指定 Python 文件加载名为 config_data 的配置字典。"""
     if not os.path.exists(config_path):
         logger.info(f"提示: 配置文件 {config_path} 未找到。")
         return None
@@ -644,7 +664,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
-    config_file_name = r"E:\project\AutoApp\config\config.py"
+    config_file_name = r"F:\project\AutoApp\config\config.py"
     current_config = load_config_from_py(config_file_name)
 
     if current_config is None:
