@@ -35,6 +35,7 @@ QUESTION_TYPE_OPTIONS = {
     "单选（定制比例）": "single_choice_probabilities",
     "多选（范围随机）": "Multiple_choices_random_int",
     "多选（独立概率）": "Multiple_choices_probabilities",
+    "填空（答案库/比例）": "text_probabilities",
 }
 QUESTION_TYPE_NAMES = {value: key for key, value in QUESTION_TYPE_OPTIONS.items()}
 
@@ -72,6 +73,14 @@ def describe_answer_rule(question):
             return " / ".join(f"{float(value):.0%}" for value in probabilities)
         except (TypeError, ValueError):
             return "概率配置无效"
+    if question_type == "text_probabilities":
+        answers = logic.get("answers") or []
+        probabilities = logic.get("probabilities") or []
+        try:
+            ratio_text = " / ".join(f"{float(value):.0%}" for value in probabilities)
+        except (TypeError, ValueError):
+            ratio_text = "比例无效"
+        return f"{len(answers)} 条答案：{ratio_text}"
     return "无法识别"
 
 
@@ -104,6 +113,44 @@ def parse_probability_text(text):
     return values
 
 
+def parse_text_answer_lines(text):
+    """
+    解析填空题答案库。
+
+    一行一个答案时自动等概率；使用“答案 | 比例”时按比例抽取。
+    """
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("请至少填写一条非空答案。")
+
+    weighted_flags = ["|" in line or "｜" in line for line in lines]
+    if any(weighted_flags) and not all(weighted_flags):
+        raise ValueError("请统一格式：全部只写答案，或每行都使用“答案 | 比例”。")
+
+    answers = []
+    probabilities = []
+    if all(weighted_flags):
+        for line in lines:
+            normalized = line.replace("｜", "|")
+            answer, probability_text = normalized.rsplit("|", 1)
+            answer = answer.strip()
+            if not answer:
+                raise ValueError("填空答案不能为空。")
+            probability_values = parse_probability_text(probability_text.strip())
+            if len(probability_values) != 1:
+                raise ValueError(f"每行只能填写一个比例：{line}")
+            answers.append(answer)
+            probabilities.append(probability_values[0])
+        if abs(sum(probabilities) - 1) > 0.001:
+            raise ValueError(f"填空答案比例合计必须为100%，当前为 {sum(probabilities):.2%}。")
+    else:
+        answers = lines
+        probabilities = [1 / len(answers)] * len(answers)
+
+    return answers, probabilities
+
+
 def build_config_text(config):
     """将配置字典转换为可直接加载的 Python 配置文件内容。"""
 
@@ -121,7 +168,7 @@ class QuestionEditorDialog:
 
         self.window = tk.Toplevel(parent)
         self.window.title("编辑题目" if question else "添加题目")
-        self.window.geometry("620x520")
+        self.window.geometry("700x650")
         self.window.resizable(False, False)
         self.window.transient(parent)
         self.window.grab_set()
@@ -143,6 +190,17 @@ class QuestionEditorDialog:
         self.probabilities_var = tk.StringVar(
             value=", ".join(f"{float(value):g}" for value in probabilities)
         )
+        text_answers = answer_logic.get("answers") or []
+        if question.get("type") == "text_probabilities" and text_answers:
+            if len(probabilities) == len(text_answers):
+                self.text_answers_initial = "\n".join(
+                    f"{answer} | {float(probability):.2%}"
+                    for answer, probability in zip(text_answers, probabilities)
+                )
+            else:
+                self.text_answers_initial = "\n".join(str(answer) for answer in text_answers)
+        else:
+            self.text_answers_initial = ""
         self.conditional_var = tk.BooleanVar(value=bool(question.get("is_conditional", False)))
         self.condition_question_var = tk.StringVar(value=str(condition.get("on_question_id", "")))
         self.condition_answers_var = tk.StringVar(
@@ -185,23 +243,43 @@ class QuestionEditorDialog:
 
         ttk.Separator(frame).grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=12)
 
-        ttk.Label(frame, text="最小选项号").grid(row=4, column=0, sticky=tk.W, pady=6)
+        self.min_label = ttk.Label(frame, text="最小选项号")
+        self.min_label.grid(row=4, column=0, sticky=tk.W, pady=6)
         self.min_entry = ttk.Entry(frame, textvariable=self.min_var)
         self.min_entry.grid(row=4, column=1, sticky=tk.EW, pady=6)
 
-        ttk.Label(frame, text="最大选项号").grid(row=5, column=0, sticky=tk.W, pady=6)
+        self.max_label = ttk.Label(frame, text="最大选项号")
+        self.max_label.grid(row=5, column=0, sticky=tk.W, pady=6)
         self.max_entry = ttk.Entry(frame, textvariable=self.max_var)
         self.max_entry.grid(row=5, column=1, sticky=tk.EW, pady=6)
 
-        ttk.Label(frame, text="选项概率").grid(row=6, column=0, sticky=tk.W, pady=6)
+        self.probabilities_label = ttk.Label(frame, text="选项概率")
+        self.probabilities_label.grid(row=6, column=0, sticky=tk.W, pady=6)
         self.probabilities_entry = ttk.Entry(frame, textvariable=self.probabilities_var)
         self.probabilities_entry.grid(row=6, column=1, columnspan=2, sticky=tk.EW, pady=6)
-        ttk.Label(
+        self.probabilities_hint = ttk.Label(
             frame,
             text="按选项顺序填写，例如：20%, 50%, 30% 或 0.2, 0.5, 0.3",
-        ).grid(row=7, column=1, columnspan=2, sticky=tk.W)
+        )
+        self.probabilities_hint.grid(row=7, column=1, columnspan=2, sticky=tk.W)
 
-        ttk.Separator(frame).grid(row=8, column=0, columnspan=3, sticky=tk.EW, pady=12)
+        self.text_answers_label = ttk.Label(frame, text="填空答案库")
+        self.text_answers_label.grid(row=8, column=0, sticky=tk.NW, pady=6)
+        self.text_answers_input = ScrolledText(
+            frame,
+            height=8,
+            wrap=tk.WORD,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.text_answers_input.grid(row=8, column=1, columnspan=2, sticky=tk.EW, pady=6)
+        self.text_answers_input.insert("1.0", self.text_answers_initial)
+        self.text_answers_hint = ttk.Label(
+            frame,
+            text="一行一个答案＝等概率；指定比例请写：答案 | 30%（所有比例合计100%）",
+        )
+        self.text_answers_hint.grid(row=9, column=1, columnspan=2, sticky=tk.W)
+
+        ttk.Separator(frame).grid(row=10, column=0, columnspan=3, sticky=tk.EW, pady=12)
 
         condition_check = ttk.Checkbutton(
             frame,
@@ -209,36 +287,53 @@ class QuestionEditorDialog:
             variable=self.conditional_var,
             command=self._refresh_condition_fields,
         )
-        condition_check.grid(row=9, column=0, columnspan=3, sticky=tk.W, pady=6)
+        condition_check.grid(row=11, column=0, columnspan=3, sticky=tk.W, pady=6)
 
-        ttk.Label(frame, text="依赖题号").grid(row=10, column=0, sticky=tk.W, pady=6)
+        ttk.Label(frame, text="依赖题号").grid(row=12, column=0, sticky=tk.W, pady=6)
         self.condition_question_entry = ttk.Entry(frame, textvariable=self.condition_question_var)
-        self.condition_question_entry.grid(row=10, column=1, sticky=tk.EW, pady=6)
-        ttk.Label(frame, text="前置题的题号").grid(row=10, column=2, sticky=tk.W, padx=(8, 0))
+        self.condition_question_entry.grid(row=12, column=1, sticky=tk.EW, pady=6)
+        ttk.Label(frame, text="前置题的题号").grid(row=12, column=2, sticky=tk.W, padx=(8, 0))
 
-        ttk.Label(frame, text="触发答案").grid(row=11, column=0, sticky=tk.W, pady=6)
+        ttk.Label(frame, text="触发答案").grid(row=13, column=0, sticky=tk.W, pady=6)
         self.condition_answers_entry = ttk.Entry(frame, textvariable=self.condition_answers_var)
-        self.condition_answers_entry.grid(row=11, column=1, sticky=tk.EW, pady=6)
-        ttk.Label(frame, text="例如：1, 2").grid(row=11, column=2, sticky=tk.W, padx=(8, 0))
+        self.condition_answers_entry.grid(row=13, column=1, sticky=tk.EW, pady=6)
+        ttk.Label(frame, text="例如：1, 2").grid(row=13, column=2, sticky=tk.W, padx=(8, 0))
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=12, column=0, columnspan=3, sticky=tk.E, pady=(20, 0))
+        buttons.grid(row=14, column=0, columnspan=3, sticky=tk.E, pady=(20, 0))
         ttk.Button(buttons, text="取消", command=self.window.destroy).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="保存题目", style="Primary.TButton", command=self._save).pack(
             side=tk.RIGHT, padx=(0, 8)
         )
 
     def _refresh_rule_fields(self):
-        """根据题型切换范围输入或概率输入。"""
+        """根据题型只显示当前需要填写的规则区域。"""
 
         question_type = QUESTION_TYPE_OPTIONS.get(self.type_var.get())
         uses_range = question_type in {
             "single_choice_random_int",
             "Multiple_choices_random_int",
         }
-        self.min_entry.configure(state=tk.NORMAL if uses_range else tk.DISABLED)
-        self.max_entry.configure(state=tk.NORMAL if uses_range else tk.DISABLED)
-        self.probabilities_entry.configure(state=tk.DISABLED if uses_range else tk.NORMAL)
+        uses_choice_probabilities = question_type in {
+            "single_choice_probabilities",
+            "Multiple_choices_probabilities",
+        }
+        uses_text_answers = question_type == "text_probabilities"
+
+        for widget in (self.min_label, self.min_entry, self.max_label, self.max_entry):
+            widget.grid() if uses_range else widget.grid_remove()
+        for widget in (
+            self.probabilities_label,
+            self.probabilities_entry,
+            self.probabilities_hint,
+        ):
+            widget.grid() if uses_choice_probabilities else widget.grid_remove()
+        for widget in (
+            self.text_answers_label,
+            self.text_answers_input,
+            self.text_answers_hint,
+        ):
+            widget.grid() if uses_text_answers else widget.grid_remove()
 
     def _refresh_condition_fields(self):
         """启用或关闭条件题输入框。"""
@@ -279,6 +374,18 @@ class QuestionEditorDialog:
                 )
                 return
             answer_logic = {"min": min_value, "max": max_value}
+        elif question_type == "text_probabilities":
+            try:
+                answers, probabilities = parse_text_answer_lines(
+                    self.text_answers_input.get("1.0", tk.END)
+                )
+            except ValueError as exc:
+                messagebox.showerror("题目配置错误", str(exc), parent=self.window)
+                return
+            answer_logic = {
+                "answers": answers,
+                "probabilities": probabilities,
+            }
         else:
             try:
                 probabilities = parse_probability_text(self.probabilities_var.get())

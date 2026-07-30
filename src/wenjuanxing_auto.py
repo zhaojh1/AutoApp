@@ -8,7 +8,7 @@
 4. 提交问卷，等待人工处理可能出现的验证码。
 5. 判断提交结果，并按设定的时间间隔重复执行。
 
-当前仅支持普通单选题和多选题。
+当前支持普通单选题、多选题和填空题。
 """
 
 import time
@@ -177,6 +177,31 @@ class WJXSubmitter:
                     if not answer:
                         # 禁止空选：全部选项都未命中时，随机补选一个。
                         answer = [str(self.get_random_int(1, options_count))]
+            # 填空题：从答案库中按配置比例选择一条非空文本。
+            elif q_type == "text_probabilities":
+                text_answers = answer_logic.get("answers") or []
+                probabilities = answer_logic.get("probabilities") or []
+                valid_answers = [
+                    str(text_answer).strip()
+                    for text_answer in text_answers
+                    if str(text_answer).strip()
+                ]
+                if valid_answers and len(valid_answers) == len(text_answers):
+                    if not probabilities:
+                        probabilities = [1 / len(valid_answers)] * len(valid_answers)
+                    if (
+                        len(probabilities) == len(valid_answers)
+                        and all(0 <= probability <= 1 for probability in probabilities)
+                        and abs(sum(probabilities) - 1) < 0.001
+                    ):
+                        answer_index = self.get_random_answer_by_probabilities(probabilities) - 1
+                        answer = valid_answers[answer_index]
+                    else:
+                        self.logger.warning(
+                            f"问题 {q_id} 的填空答案概率无效：数量必须与答案一致，且合计为1。"
+                        )
+                else:
+                    self.logger.warning(f"问题 {q_id} 的填空答案库为空或包含空答案。")
             else:
                 self.logger.warning(f"问题 {q_id} 的类型 '{q_type}' 未知或未实现。")
 
@@ -242,6 +267,46 @@ class WJXSubmitter:
             self.logger.error(f"填写问题 div{question_id_num_str} 时发生错误: {e}")
             return False
 
+    def fill_text_question(self, question_id_num_str, answer_text):
+        """
+        填写一道填空题。
+
+        问卷星填空控件按照 //*[@id="q题号"] 定位，
+        例如第 4 题对应 //*[@id="q4"]。
+        """
+        if answer_text is None or not str(answer_text).strip():
+            self.logger.error(f"填空题 q{question_id_num_str} 的答案为空，已拒绝填写。")
+            return False
+
+        input_xpath = f'//*[@id="q{question_id_num_str}"]'
+        try:
+            input_element = WebDriverWait(self.driver, 7).until(
+                EC.element_to_be_clickable((By.XPATH, input_xpath))
+            )
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});",
+                input_element,
+            )
+            time.sleep(0.2)
+            input_element.clear()
+            input_element.send_keys(str(answer_text).strip())
+            time.sleep(random.uniform(0.3, 0.7))
+
+            # 再次读取 value，确认文本确实写入输入框。
+            actual_value = (input_element.get_attribute("value") or "").strip()
+            if not actual_value:
+                self.logger.warning(f"填空题 q{question_id_num_str} 写入后仍为空。")
+                return False
+            return True
+        except TimeoutException:
+            self.logger.warning(
+                f"填空题 q{question_id_num_str} 未找到或不可填写，使用的 XPath：{input_xpath}"
+            )
+            return False
+        except Exception as e:
+            self.logger.error(f"填写填空题 q{question_id_num_str} 时发生错误: {e}")
+            return False
+
     def submit_once(self):
         """完成一次“打开问卷—生成答案—填写—提交—判断结果”的流程。"""
         # 第一步：打开问卷，并等待第一题出现在页面中。
@@ -264,6 +329,18 @@ class WJXSubmitter:
         self.generate_answers_from_config()
 
         question_configs = self.config.get("questions", [])
+        missing_answer_ids = [
+            str(q_config.get("id"))
+            for q_config in question_configs
+            if self.generated_answers_cache.get(q_config.get("id")) in (None, "", [])
+        ]
+        if missing_answer_ids:
+            self.logger.error(
+                "以下题目未生成非空答案，本轮取消提交："
+                + ", ".join(missing_answer_ids)
+            )
+            return False
+
         questions_filled_count = 0
         questions_attempted_to_fill = 0
 
@@ -285,12 +362,24 @@ class WJXSubmitter:
 
             if condition_met:
                 questions_attempted_to_fill += 1
-                if self.fill_question(q_id, answer_to_fill):
+                if q_config.get("type") == "text_probabilities":
+                    fill_succeeded = self.fill_text_question(q_id, answer_to_fill)
+                else:
+                    fill_succeeded = self.fill_question(q_id, answer_to_fill)
+
+                if fill_succeeded:
                     questions_filled_count += 1
                 else:
                     self.logger.warning(f"问题 div{q_id} 未能成功填写 (可能是实际隐藏或页面结构不匹配)。")
 
         self.logger.info(f"成功填写 {questions_filled_count}/{questions_attempted_to_fill} 个激活且配置了答案的问题。")
+
+        # 任一道激活题填写失败都禁止提交，避免产生空题问卷。
+        if questions_filled_count != questions_attempted_to_fill:
+            self.logger.error(
+                "存在未成功填写的激活题，本轮已取消提交。"
+            )
+            return False
 
         # 第四步：找到提交按钮并提交问卷。
         try:
